@@ -11,6 +11,7 @@ use crate::btreeindex::{
 use crate::FixedSize;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 pub struct ReadTransaction<T: TreeIdentifier, P: std::borrow::Borrow<Pages>> {
     version: T,
@@ -21,7 +22,7 @@ pub struct ReadTransaction<T: TreeIdentifier, P: std::borrow::Borrow<Pages>> {
 /// it can be used to create a new `Version` at the end with all the insertions done atomically
 pub(crate) struct WriteTransaction<'storage, G: PageIdGenerator> {
     pub current_root: Cell<PageId>,
-    state: RefCell<State<G>>,
+    state: Rc<RefCell<State<G>>>,
     pages: &'storage Pages,
 }
 
@@ -67,7 +68,15 @@ impl<'locks, 'storage: 'locks, G: PageIdGenerator> WriteTransaction<'storage, G>
         WriteTransaction {
             current_root: Cell::new(current_root),
             pages,
-            state: RefCell::new(state),
+            state: Rc::new(RefCell::new(state)),
+        }
+    }
+
+    pub fn sub(&mut self, root: PageId) -> WriteTransaction<'storage, G> {
+        WriteTransaction {
+            current_root: Cell::new(root),
+            pages: &self.pages,
+            state: Rc::clone(&self.state),
         }
     }
 
@@ -178,20 +187,32 @@ impl<'locks, 'storage: 'locks, G: PageIdGenerator> WriteTransaction<'storage, G>
 
     /// commit creates a new version of the tree, it doesn't sync the file, but it makes the version
     /// available to new readers
-    pub fn commit<K>(self) -> super::WriteTransactionDelta
+    pub fn commit<K>(self) -> CommitResult
     where
         K: FixedSize,
     {
         let new_root = self.root();
-        let state = self.state.into_inner();
-        super::WriteTransactionDelta {
+
+        let state = match Rc::try_unwrap(self.state) {
+            Ok(state) => state,
+            Err(_) => return CommitResult::SubTx(new_root),
+        };
+
+        let state = state.into_inner();
+
+        CommitResult::RootTx(super::WriteTransactionDelta {
             new_root,
             shadowed_pages: state.shadows.keys().cloned().collect(),
             // Pages allocated at the end, basically
             next_page_id: state.page_manager.next_id(),
             deleted_pages: state.deleted_pages,
-        }
+        })
     }
+}
+
+pub(crate) enum CommitResult {
+    RootTx(super::WriteTransactionDelta),
+    SubTx(PageId),
 }
 
 pub(crate) enum MutablePage<'a, 'b: 'a, G: PageIdGenerator> {

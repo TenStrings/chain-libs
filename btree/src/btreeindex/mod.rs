@@ -9,7 +9,7 @@ mod pages;
 mod tree_algorithm;
 mod version_management;
 
-use version_management::transaction::{PageRef, ReadTransaction};
+use version_management::transaction::{CommitResult, PageRef, ReadTransaction};
 use version_management::*;
 
 use crate::BTreeStoreError;
@@ -199,7 +199,10 @@ where
                     tree_algorithm::insert(&mut tx, key, value, page_size)?;
                 }
 
-                Ok(tx.commit::<K>())
+                match tx.commit::<K>() {
+                    CommitResult::RootTx(delta) => Ok(delta),
+                    CommitResult::SubTx(_) => unreachable!(),
+                }
             })
     }
 
@@ -244,7 +247,10 @@ where
 
     /// perform a range query. The returned iterator holds a read-only transaction for it's entire lifetime.
     /// This avoids pages to be collected, so it may better for it to not be long-lived.
-    pub fn range<R, Q>(&self, range: R) -> BTreeIterator<std::sync::Arc<Version>, R, Q, K, V>
+    pub fn range<R, Q>(
+        &self,
+        range: R,
+    ) -> BTreeIterator<std::sync::Arc<Version>, R, Q, K, V, &Pages>
     where
         K: Borrow<Q>,
         R: RangeBounds<Q>,
@@ -269,7 +275,10 @@ where
             .with_write_transaction(&self.pages, |mut tx| {
                 UpdateBacktrack::new_search_for(&mut tx, key).update(f)?;
 
-                Ok(tx.commit::<K>())
+                match tx.commit::<K>() {
+                    CommitResult::RootTx(delta) => Ok(delta),
+                    CommitResult::SubTx(_) => unreachable!(),
+                }
             })
     }
 
@@ -279,7 +288,10 @@ where
             .with_write_transaction(&self.pages, |mut tx| {
                 tree_algorithm::delete::<K, V, _>(key, &mut tx)?;
 
-                Ok(tx.commit::<K>())
+                match tx.commit::<K>() {
+                    CommitResult::RootTx(delta) => Ok(delta),
+                    CommitResult::SubTx(_) => unreachable!(),
+                }
             })
     }
 
@@ -295,7 +307,10 @@ where
                     result.replace(key_value);
                 }
 
-                Ok(tx.commit::<K>())
+                match tx.commit::<K>() {
+                    CommitResult::RootTx(delta) => Ok(delta),
+                    CommitResult::SubTx(_) => unreachable!(),
+                }
             })?;
 
         Ok(result)
